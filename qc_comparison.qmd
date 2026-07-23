@@ -1,0 +1,740 @@
+---
+title: "Single-Cell Metadata QC Comparison"
+subtitle: "metadata.v2024.2.3.1.parquet (HCA CellxGene 2024) vs metadata.v2025.1.0.1.parquet (HCA CellxGene 2025)"
+author: "Mengyuan Shen <shen.m@wehi.edu.au>"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    code-fold: true
+    code-tools: true
+    self-contained: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup}
+library(duckdb)
+library(dplyr)
+library(dbplyr)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(tidyr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(cellNexus)
+
+# ── colour palette (keys must match atlas_id values in parquet) ─────────────
+cell_quality_cols <- c(
+  "Empty Droplet" = "#bdbdbd",
+  "Alive Cells"   = "#8dd3c7",
+  "Dead"          = "#fb8072",
+  "Doublet"       = "#bebada"
+)
+
+# ── helper: pretty percent ───────────────────────────────────────────────────
+pct <- function(x, digits = 2) paste0(round(x * 100, digits), "%")
+```
+
+## Overview
+
+This report compares two releases of the **CellNexus** single-cell metadata
+corpus: corpus scale (cells, datasets, samples, donors, tissues, cell types),
+new tissues in 2025, and quality-control (QC) metrics:
+
+| Label | File | Atlas |
+|---|---|---|
+| **v2.3.1** | `metadata.v2024.2.3.1.parquet` | `cellxgene_2024` |
+| **v2025.1.0.1** | `metadata.v2025.1.0.1.parquet` | `cellxgene_2025` |
+
+Three QC flags are examined:
+
+* **Empty droplet** — cell is flagged as an empty droplet (`empty_droplet == TRUE`)
+* **Dead** — cell is non-empty **and** `alive == FALSE`
+* **Doublet** — cell is non-empty **and** `scDblFinder.class == "doublet"`
+
+---
+
+## 1  Data Loading
+
+```{r load-data}
+cells <- get_metadata(cloud_metadata = get_metadata_url(databases = c(
+  "metadata.v2024.2.3.1.parquet",
+  "metadata.v2025.1.0.1.parquet"
+)))
+
+atlas_ids <- cells |>
+  distinct(atlas_id) |>
+  arrange(atlas_id) |>
+  collect() |>
+  pull(atlas_id)
+
+pal <- setNames(c("#F28E2B", "#4E79A7"), atlas_ids)
+atlas_labels <- setNames(
+  c("HCA 2024 (v2.3.1)", "HCA 2025 (v1.0.1)"),
+  atlas_ids
+)
+
+id_2024 <- atlas_ids[str_detect(atlas_ids, "2024")][1]
+id_2025 <- atlas_ids[str_detect(atlas_ids, "2025")][1]
+
+stack_cols <- c(
+  "2024" = "#F28E2B",
+  "2025_extra" = "#4E79A7"
+)
+stack_labels <- c(
+  "2024" = "2024",
+  "2025_extra" = "2025 (additional)"
+)
+
+plot_2024_2025_stack <- function(data, y_var, xlab, title, subtitle) {
+  y <- rlang::sym(y_var)
+  data |>
+    pivot_longer(
+      cols = c(n_2024, n_2025_extra),
+      names_to = "segment",
+      values_to = "count"
+    ) |>
+    mutate(
+      segment = recode(segment, n_2024 = "2024", n_2025_extra = "2025_extra"),
+      segment = factor(segment, levels = c("2024", "2025_extra"))
+    ) |>
+    ggplot(aes(x = count, y = reorder(!!y, total), fill = segment)) +
+    geom_col(position = position_stack(reverse = TRUE), width = 0.8) +
+    scale_fill_manual(values = stack_cols, labels = stack_labels, name = NULL) +
+    scale_x_continuous(labels = comma, expand = expansion(mult = c(0, 0.05))) +
+    labs(title = title, subtitle = subtitle, x = xlab, y = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+}
+```
+
+---
+
+## 2  Corpus summary
+
+```{r corpus-summary}
+corpus_summary <- cells |>
+  group_by(atlas_id) |>
+  summarise(
+    cell_count                  = n(),
+    dataset_count               = n_distinct(dataset_id),
+    sample_count                = n_distinct(sample_id),
+    donor_count                 = n_distinct(donor_id),
+    tissue_count                = n_distinct(tissue),
+    cell_type_unified_ensemble_count = n_distinct(cell_type_unified_ensemble),
+    .groups = "drop"
+  ) |>
+  collect()
+```
+
+```{r corpus-summary-plot, fig.width=12, fig.height=10}
+corpus_summary_long <- corpus_summary |>
+  pivot_longer(-atlas_id, names_to = "metric", values_to = "count") |>
+  mutate(
+    atlas_label = atlas_labels[atlas_id],
+    metric = recode(
+      metric,
+      cell_count = "Cells",
+      dataset_count = "Datasets",
+      sample_count = "Samples",
+      donor_count = "Donors",
+      tissue_count = "Tissues",
+      cell_type_unified_ensemble_count = "Cell types (unified ensemble)"
+    ),
+    metric = factor(metric, levels = c(
+      "Cells", "Datasets", "Samples", "Donors",
+      "Tissues", "Cell types (unified ensemble)"
+    ))
+  )
+
+ggplot(corpus_summary_long, aes(x = atlas_label, y = count, fill = atlas_id)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = comma(count)), vjust = -0.5, size = 3.2) +
+  scale_fill_manual(values = pal, guide = "none") +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.18))) +
+  facet_wrap(~metric, scales = "free_y", ncol = 2, strip.position = "bottom") +
+  labs(
+    title = "Corpus scale comparison",
+    x = NULL, y = "Count"
+  ) +
+  guides(fill = "none") +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(size = 10, face = "bold"),
+    strip.placement = "outside",
+    axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1, margin = margin(t = 4)),
+    legend.position = "none",
+    plot.margin = margin(10, 10, 25, 10)
+  )
+```
+
+---
+
+## 3  New tissues in 2025 vs 2024
+
+Tissues present in the **2025** atlas but not in the **2024** atlas.
+
+```{r new-tissues}
+tissues_groups_24 <- cells |> 
+  filter(atlas_id |> str_detect("hca_2024")) |>
+  distinct(tissue_groups) |>
+  pull(tissue_groups)
+
+tissues_groups_25 <- cells |> 
+  filter(atlas_id |> str_detect("hca_2025")) |>
+  distinct(tissue_groups) |>
+  pull(tissue_groups)
+
+setdiff(tissues_groups_25, tissues_groups_24)
+```
+
+---
+
+## 4  QC Flag Summary
+
+```{r qc-flags}
+qc_summary <- cells |>
+  group_by(atlas_id) |>
+  summarise(
+    total              = n(),
+    n_empty            = sum(as.integer(empty_droplet == TRUE),       na.rm = TRUE),
+    n_dead             = sum(as.integer(empty_droplet == FALSE & alive == FALSE), na.rm = TRUE),
+    n_doublet          = sum(as.integer(empty_droplet == FALSE & scDblFinder.class == "doublet"), na.rm = TRUE),
+    n_empty_na         = sum(as.integer(is.na(empty_droplet)),        na.rm = TRUE),
+    n_alive_na         = sum(as.integer(is.na(alive)),                na.rm = TRUE),
+    n_dbl_na           = sum(as.integer(is.na(scDblFinder.class)),    na.rm = TRUE)
+  ) |>
+  collect() |>
+  mutate(
+    pct_empty   = n_empty   / total,
+    pct_dead    = n_dead    / total,
+    pct_doublet = n_doublet / total
+  )
+```
+
+```{r qc-flags-plot}
+qc_long <- qc_summary |>
+  select(atlas_id, pct_empty, pct_dead, pct_doublet) |>
+  pivot_longer(-atlas_id, names_to = "flag", values_to = "proportion") |>
+  mutate(flag = recode(flag,
+    pct_empty   = "Empty droplet",
+    pct_dead    = "Dead",
+    pct_doublet = "Doublet"
+  )) |>
+  mutate(
+    flag = factor(flag, levels = c("Empty droplet", "Dead", "Doublet"))
+  )
+
+ggplot(qc_long, aes(x = flag, y = proportion, fill = atlas_id)) +
+  geom_col(position = position_dodge(width = 0.6), width = 0.5) +
+  geom_text(
+    aes(label = pct(proportion, 1)),
+    position = position_dodge(width = 0.6),
+    vjust = -0.4, size = 3.5
+  ) +
+  scale_fill_manual(values = pal, labels = atlas_labels, name = "Atlas") +
+  scale_y_continuous(labels = percent_format(), expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "QC flag proportions by atlas version",
+    x = NULL, y = "Proportion of all cells"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+## 5  Demographic Overview
+
+### 5.1  Sex distribution
+
+```{r sex-dist}
+sex_dist <- cells |>
+  distinct(atlas_id, donor_id, sex) |>
+  group_by(atlas_id, sex) |>
+  summarise(n = n(), .groups = "drop") |>
+  collect() |>
+  group_by(atlas_id) |>
+  mutate(pct = n / sum(n))
+
+ggplot(sex_dist, aes(x = sex, y = pct, fill = atlas_id)) +
+  geom_col(position = position_dodge(width = 0.6), width = 0.5) +
+  scale_fill_manual(values = pal, labels = atlas_labels, name = "Atlas") +
+  scale_y_continuous(labels = percent_format()) +
+  labs(title = "Sex distribution (donor level)", x = "Sex", y = "Proportion of donors") +
+  theme_minimal(base_size = 13)
+```
+
+### 5.2  Donors by tissue (2024 base + 2025 additional)
+
+Stacked bars per tissue: **2024** donor count (left), plus **2025-only**
+donors for that tissue (right; not present in 2024 for the same tissue). Top 40
+tissues by total bar height.
+
+```{r donors-by-tissue, fig.width=11, fig.height=14}
+donors_2024_by_tissue <- cells |>
+  filter(atlas_id == id_2024, !is.na(tissue), tissue != "") |>
+  distinct(tissue, donor_id) |>
+  collect()
+
+donors_2025_by_tissue <- cells |>
+  filter(atlas_id == id_2025, !is.na(tissue), tissue != "") |>
+  distinct(tissue, donor_id) |>
+  collect()
+
+donors_2024_counts <- donors_2024_by_tissue |>
+  count(tissue, name = "n_2024")
+
+donors_2025_extra_by_tissue <- donors_2025_by_tissue |>
+  anti_join(donors_2024_by_tissue, by = c("tissue", "donor_id")) |>
+  count(tissue, name = "n_2025_extra")
+
+donor_tissue_wide <- donors_2024_counts |>
+  full_join(donors_2025_extra_by_tissue, by = "tissue") |>
+  mutate(
+    n_2024 = replace_na(n_2024, 0L),
+    n_2025_extra = replace_na(n_2025_extra, 0L),
+    tissue = str_trunc(tissue, 50),
+    total = n_2024 + n_2025_extra
+  ) |>
+  slice_max(total, n = 40, with_ties = FALSE)
+
+plot_2024_2025_stack(
+  donor_tissue_wide,
+  y_var = "tissue",
+  xlab = "Donors",
+  title = "Donors by tissue — 2024 and additional in 2025",
+  subtitle = "Top 40 tissues; orange = 2024 (left), blue = 2025 additional (right)"
+)
+```
+
+### 5.3  Datasets by tissue (2024 base + 2025 additional)
+
+```{r datasets-by-tissue, fig.width=11, fig.height=14}
+datasets_2024_by_tissue <- cells |>
+  filter(atlas_id == id_2024, !is.na(tissue), tissue != "") |>
+  distinct(tissue, dataset_id) |>
+  collect()
+
+datasets_2025_by_tissue <- cells |>
+  filter(atlas_id == id_2025, !is.na(tissue), tissue != "") |>
+  distinct(tissue, dataset_id) |>
+  collect()
+
+datasets_2024_counts <- datasets_2024_by_tissue |>
+  count(tissue, name = "n_2024")
+
+datasets_2025_extra_by_tissue <- datasets_2025_by_tissue |>
+  anti_join(datasets_2024_by_tissue, by = c("tissue", "dataset_id")) |>
+  count(tissue, name = "n_2025_extra")
+
+dataset_tissue_wide <- datasets_2024_counts |>
+  full_join(datasets_2025_extra_by_tissue, by = "tissue") |>
+  mutate(
+    n_2024 = replace_na(n_2024, 0L),
+    n_2025_extra = replace_na(n_2025_extra, 0L),
+    tissue = str_trunc(tissue, 50),
+    total = n_2024 + n_2025_extra
+  ) |>
+  slice_max(total, n = 50, with_ties = FALSE)
+
+plot_2024_2025_stack(
+  dataset_tissue_wide,
+  y_var = "tissue",
+  xlab = "Datasets",
+  title = "Datasets by tissue — 2024 and additional in 2025",
+  subtitle = "Top 50 tissues; orange = 2024 (left), blue = 2025 additional (right)"
+)
+```
+
+### 5.4  Donors by tissue group (2024 base + 2025 additional)
+
+Same stacked layout as §5.2, using `tissue_groups`.
+
+```{r donors-by-tissue-groups, fig.width=11, fig.height=14}
+donors_2024_by_tg <- cells |>
+  filter(atlas_id == id_2024, !is.na(tissue_groups), tissue_groups != "") |>
+  distinct(tissue_groups, donor_id) |>
+  collect()
+
+donors_2025_by_tg <- cells |>
+  filter(atlas_id == id_2025, !is.na(tissue_groups), tissue_groups != "") |>
+  distinct(tissue_groups, donor_id) |>
+  collect()
+
+donors_2024_tg_counts <- donors_2024_by_tg |>
+  count(tissue_groups, name = "n_2024")
+
+donors_2025_extra_by_tg <- donors_2025_by_tg |>
+  anti_join(donors_2024_by_tg, by = c("tissue_groups", "donor_id")) |>
+  count(tissue_groups, name = "n_2025_extra")
+
+donor_tg_wide <- donors_2024_tg_counts |>
+  full_join(donors_2025_extra_by_tg, by = "tissue_groups") |>
+  mutate(
+    n_2024 = replace_na(n_2024, 0L),
+    n_2025_extra = replace_na(n_2025_extra, 0L),
+    tissue_groups = str_trunc(tissue_groups, 50),
+    total = n_2024 + n_2025_extra
+  )
+
+plot_2024_2025_stack(
+  donor_tg_wide,
+  y_var = "tissue_groups",
+  xlab = "Donors",
+  title = "Donors by tissue group — 2024 and additional in 2025",
+  subtitle = "All tissue groups; orange = 2024 (left), blue = 2025 additional (right)"
+)
+```
+
+### 5.5  Datasets by tissue group (2024 base + 2025 additional)
+
+```{r datasets-by-tissue-groups, fig.width=11, fig.height=14}
+datasets_2024_by_tg <- cells |>
+  filter(atlas_id == id_2024, !is.na(tissue_groups), tissue_groups != "") |>
+  distinct(tissue_groups, dataset_id) |>
+  collect()
+
+datasets_2025_by_tg <- cells |>
+  filter(atlas_id == id_2025, !is.na(tissue_groups), tissue_groups != "") |>
+  distinct(tissue_groups, dataset_id) |>
+  collect()
+
+datasets_2024_tg_counts <- datasets_2024_by_tg |>
+  count(tissue_groups, name = "n_2024")
+
+datasets_2025_extra_by_tg <- datasets_2025_by_tg |>
+  anti_join(datasets_2024_by_tg, by = c("tissue_groups", "dataset_id")) |>
+  count(tissue_groups, name = "n_2025_extra")
+
+dataset_tg_wide <- datasets_2024_tg_counts |>
+  full_join(datasets_2025_extra_by_tg, by = "tissue_groups") |>
+  mutate(
+    n_2024 = replace_na(n_2024, 0L),
+    n_2025_extra = replace_na(n_2025_extra, 0L),
+    tissue_groups = str_trunc(tissue_groups, 50),
+    total = n_2024 + n_2025_extra
+  )
+
+plot_2024_2025_stack(
+  dataset_tg_wide,
+  y_var = "tissue_groups",
+  xlab = "Datasets",
+  title = "Datasets by tissue group — 2024 and additional in 2025",
+  subtitle = "All tissue groups; orange = 2024 (left), blue = 2025 additional (right)"
+)
+```
+
+### 5.6  Self-reported ethnicity
+
+Comparisons use **distinct ethnicity labels** and **donor counts** between atlas versions.
+
+```{r ethnicity-prep}
+eth_2024 <- cells |>
+  filter(
+    atlas_id == id_2024,
+    !is.na(self_reported_ethnicity),
+    self_reported_ethnicity != ""
+  ) |>
+  distinct(donor_id, self_reported_ethnicity) |>
+  collect()
+
+eth_2025 <- cells |>
+  filter(
+    atlas_id == id_2025,
+    !is.na(self_reported_ethnicity),
+    self_reported_ethnicity != ""
+  ) |>
+  distinct(donor_id, self_reported_ethnicity) |>
+  collect()
+
+eth_labels_2024 <- unique(eth_2024$self_reported_ethnicity)
+eth_labels_2025 <- unique(eth_2025$self_reported_ethnicity)
+eth_labels_both <- intersect(eth_labels_2024, eth_labels_2025)
+eth_labels_only_2024 <- setdiff(eth_labels_2024, eth_labels_2025)
+eth_labels_only_2025 <- setdiff(eth_labels_2025, eth_labels_2024)
+
+eth_2024_counts <- eth_2024 |>
+  count(self_reported_ethnicity, name = "n_2024")
+
+eth_2025_extra <- eth_2025 |>
+  anti_join(eth_2024, by = c("self_reported_ethnicity", "donor_id")) |>
+  count(self_reported_ethnicity, name = "n_2025_extra")
+
+eth_wide <- eth_2024_counts |>
+  full_join(eth_2025_extra, by = "self_reported_ethnicity") |>
+  mutate(
+    n_2024 = replace_na(n_2024, 0L),
+    n_2025_extra = replace_na(n_2025_extra, 0L),
+    self_reported_ethnicity = str_trunc(self_reported_ethnicity, 40),
+    total = n_2024 + n_2025_extra
+  )
+
+eth_new_2025_donors <- eth_2025 |>
+  filter(self_reported_ethnicity %in% eth_labels_only_2025) |>
+  count(self_reported_ethnicity, name = "n_donors") |>
+  arrange(desc(n_donors)) |>
+  mutate(self_reported_ethnicity = str_trunc(self_reported_ethnicity, 50))
+```
+
+#### 5.6.1  Donor counts by ethnicity (stacked 2024 + 2025 additional)
+
+```{r ethnicity-stack, fig.width=11, fig.height=18}
+plot_2024_2025_stack(
+  eth_wide,
+  y_var = "self_reported_ethnicity",
+  xlab = "Donors",
+  title = "Self-reported ethnicity (donor level) — 2024 and additional in 2025",
+  subtitle = "Orange = 2024 (left), blue = 2025 additional donors (right)"
+) +
+  theme(plot.margin = margin(10, 10, 10, 10))
+```
+
+#### 5.6.2  Ethnicity label overlap (2024 vs 2025)
+
+```{r ethnicity-venn, fig.width=8, fig.height=6}
+eth_venn_sets <- list(
+  `2024` = eth_labels_2024,
+  `2025` = eth_labels_2025
+)
+
+ggvenn::ggvenn(
+    eth_venn_sets,
+    fill_color = c(stack_cols["2024"], stack_cols["2025_extra"]),
+    fill_alpha = 0.45,
+    stroke_size = 0.4,
+    set_name_size = 4,
+    text_size = 4
+  ) +
+    labs(
+      title = "Ethnicity labels — Venn diagram (2024 vs 2025)",
+      caption = "Each region counts unique self_reported_ethnicity labels"
+    ) +
+    theme(plot.title = element_text(size = 12, hjust = 0.5))
+```
+
+#### 5.6.3  New ethnicity labels in 2025 {#sec-eth-new-2025}
+
+Ethnicity labels present in **2025** but not in **2024**, with donor counts in the 2025 atlas.
+
+```{r ethnicity-new-2025-plot, fig.width=11, fig.height=8}
+if (nrow(eth_new_2025_donors) > 0) {
+  ggplot(
+    eth_new_2025_donors,
+    aes(x = n_donors, y = reorder(self_reported_ethnicity, n_donors))
+  ) +
+    geom_col(fill = stack_cols["2025_extra"], width = 0.75) +
+    scale_x_continuous(labels = comma, expand = expansion(mult = c(0, 0.05))) +
+    labs(
+      title = "New ethnicity labels in 2025 — donors per label",
+      subtitle = "Labels in 2025 not present in the 2024 ethnicity vocabulary",
+      x = "Donors in 2025", y = NULL
+    ) +
+    theme_minimal(base_size = 11)
+}
+```
+
+
+### 5.7  Age distribution (age_days)
+
+```{r age-dist}
+donors <- cells |>
+  distinct(atlas_id, donor_id, age_days) |>
+  collect()
+
+age_stats <- donors |>
+  group_by(atlas_id) |>
+  summarise(
+    n_donors    = sum(as.integer(!is.na(age_days))),
+    mean_age    = mean(age_days, na.rm = TRUE),
+    median_age  = median(age_days, na.rm = TRUE),
+    min_age     = min(age_days, na.rm = TRUE),
+    max_age     = max(age_days, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r age-hist, fig.width=12, fig.height=10}
+age_non_na <- donors |> filter(!is.na(age_days))
+age_sample <- slice_sample(
+  age_non_na,
+  n = min(200000L, nrow(age_non_na)),
+  replace = FALSE
+)
+
+ggplot(age_sample, aes(x = age_days / 365.25, fill = atlas_id)) +
+  geom_histogram(bins = 60, alpha = 0.7, position = "identity") +
+  scale_fill_manual(values = pal, labels = atlas_labels, name = "Atlas") +
+  scale_x_continuous(labels = comma) +
+  labs(
+    title = "Age distribution at donor level (sampled)",
+    x = "Age (years)", y = "Donor count"
+  ) +
+  theme_minimal(base_size = 13) +
+  facet_wrap(
+    ~atlas_id, ncol = 1, scales = "free_y",
+    labeller = labeller(atlas_id = atlas_labels)
+  )
+```
+
+---
+
+## 6  QC per Assay
+
+Stacked barplots of QC category proportions for the top 15 assays **per atlas**
+(by cell count in that atlas). Each atlas is plotted separately with its own x-axis ordering.
+
+```{r qc-per-assay}
+qc_assay <- cells |>
+  #filter(!str_detect(assay, fixed("ScaleBio"))) |>
+  group_by(atlas_id, assay) |>
+  summarise(
+    total_cells = n(),
+    empty_cells = sum(as.integer(empty_droplet == TRUE), na.rm = TRUE),
+    alive_cells = sum(as.integer(alive == TRUE), na.rm = TRUE),
+    dead_cells  = sum(as.integer(empty_droplet == FALSE & alive == FALSE), na.rm = TRUE),
+    doublet     = sum(as.integer(
+      empty_droplet == FALSE & scDblFinder.class == "doublet"
+    ), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  collect() |>
+  mutate(
+    assay_short = str_trunc(assay, 45),
+    pct_empty   = empty_cells / total_cells,
+    pct_alive   = alive_cells / total_cells,
+    pct_dead    = dead_cells  / total_cells,
+    pct_doublet = doublet     / total_cells
+  ) |>
+  select(-assay)
+
+top_assays_by_atlas <- qc_assay |>
+  group_by(atlas_id, assay_short) |>
+  slice_max(total_cells, n = 15, with_ties = FALSE) |>
+  ungroup() |>
+  select(atlas_id, assay_short)
+
+qc_assay_top <- qc_assay |>
+  inner_join(top_assays_by_atlas, by = c("atlas_id", "assay_short")) |>
+  mutate(
+    bad_cells = empty_cells + dead_cells + doublet,
+    pct_bad   = bad_cells / total_cells
+  )
+
+qc_per_assay_long <- qc_assay_top |>
+  mutate(
+    `Empty Droplet` = round(pct_empty * 100, 2),
+    `Alive Cells`   = round(pct_alive * 100, 2),
+    `Dead`          = round(pct_dead * 100, 2),
+    `Doublet`       = round(pct_doublet * 100, 2)
+  ) |>
+  pivot_longer(
+    cols = c("Empty Droplet", "Alive Cells", "Dead", "Doublet"),
+    names_to = "Group",
+    values_to = "Percentage"
+  )
+```
+
+```{r assay-qc-stack-plot-helper}
+plot_qc_stack_atlas <- function(data, atlas, x_order) {
+  order_subtitle <- if (identical(x_order, "pct_bad")) {
+    "; ordered by bad-cell % (empty + dead + doublet)"
+  } else if (identical(x_order, "total_cells")) {
+    "; ordered by cell count"
+  } else {
+    ""
+  }
+
+  plot_data <- data |>
+    filter(atlas_id == atlas, Group != "Alive Cells") |>
+    mutate(
+      Group = factor(
+        Group,
+        levels = c("Empty Droplet", "Dead", "Doublet")
+      )
+    )
+
+  ggplot(
+    plot_data,
+    aes(
+      x = reorder(assay_short, -!!rlang::sym(x_order)),
+      y = Percentage,
+      fill = Group
+    )
+  ) +
+    geom_col(position = "stack", stat = "identity", width = 0.75) +
+    scale_fill_manual(values = cell_quality_cols, name = "QC category") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+    labs(
+      title = atlas_labels[[atlas]],
+      subtitle = paste0(
+        "Top 15 assays in this atlas; alive cells omitted from stack",
+        order_subtitle
+      ),
+      x = "Technology", y = "Cell percentage (%)"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+      legend.position = "bottom",
+      legend.text = element_text(size = 11),
+      plot.title = element_text(size = 14),
+      plot.subtitle = element_text(size = 11)
+    )
+}
+```
+
+### 6.1  Stacked QC composition per assay
+
+```{r assay-qc-stack-plot-bad-2024, fig.width=14, fig.height=8}
+plot_qc_stack_atlas(qc_per_assay_long, atlas_ids[str_detect(atlas_ids, "2024")][1], "pct_bad")
+```
+
+```{r assay-qc-stack-plot-bad-2025, fig.width=14, fig.height=8}
+plot_qc_stack_atlas(qc_per_assay_long, atlas_ids[str_detect(atlas_ids, "2025")][1], "pct_bad")
+```
+
+---
+
+## 7  Missing-Value Audit for QC Columns (development)
+
+This appendix is for **development and pipeline debugging** only — it checks NA rates
+in QC columns to validate whether missing values indicate a pipeline bug.
+
+```{r missing-audit}
+missing_audit <- qc_summary |>
+  select(atlas_id, total, n_empty_na, n_alive_na, n_dbl_na) |>
+  mutate(
+    pct_empty_na = pct(n_empty_na / total),
+    pct_alive_na = pct(n_alive_na / total),
+    pct_dbl_na   = pct(n_dbl_na   / total)
+  )
+
+missing_audit |>
+  select(atlas_id, n_empty_na, pct_empty_na, n_alive_na, pct_alive_na, n_dbl_na, pct_dbl_na) |>
+  kbl(
+    col.names = c("atlas_id",
+                  "empty_droplet NA", "%",
+                  "alive NA", "%",
+                  "scDblFinder.class NA", "%"),
+    caption = "Missing values in QC columns"
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## 8  Session Info
+
+```{r session-info}
+sessionInfo()
+```
