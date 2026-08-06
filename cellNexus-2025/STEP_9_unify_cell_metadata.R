@@ -291,15 +291,15 @@ job::job({
   
   # Strip sample annotation from cellnexus annotation doesn't save too much (less than 3Mb), thus keep in one.
   remove_cols <- c(
-    "cell_type", "cell_type_ontology_term_id", "data_driven_ensemble", "ensemble_joinid",
-    "observation_originalid", "assay", "assay_ontology_term_id", "development_stage", "development_stage_ontology_term_id",
-    "disease", "disease_ontology_term_id", "donor_id", "is_primary_data", "organism", "organism_ontology_term_id",
+    "cell_type", "cell_type_ontology_term_id", "assay", "assay_ontology_term_id", "development_stage", "development_stage_ontology_term_id",
+    "disease", "disease_ontology_term_id", "is_primary_data", 
     "self_reported_ethnicity", "self_reported_ethnicity_ontology_term_id",
     "sex", "sex_ontology_term_id", "tissue", "tissue_ontology_term_id", "citation",
     "collection_id", "dataset_version_id", "default_embedding", "published_at", "raw_data_location",
     "revised_at", "primary_cell_count", "schema_version", "tissue_type", "title",
     "tombstone", "x_approximate_distribution", "explorer_url", "cell_count", "feature_count", 
-    "filesize", "filetype", "mean_genes_per_cell", "suspension_type", "url", "experiment___"
+    "filesize", "filetype", "mean_genes_per_cell", "suspension_type", "url", "sample_",
+    "sample_heuristic", "sample_chunk", "cell_chunk", "sample_pseudobulk_chunk"
   )
   
   # CellNexus metadata (smaller file for Shiny): drop heavy / internal columns by name patterns
@@ -319,7 +319,7 @@ job::job({
         SELECT {DBI::SQL(select_cellnexus)}
         FROM metadata
       )
-      TO {DBI::dbQuoteString(con, file.path(out_dir, 'hca2025_v0.1.0.parquet'))}
+      TO {DBI::dbQuoteString(con, file.path(out_dir, 'hca2025_v0.1.1.parquet'))}
       (FORMAT PARQUET, COMPRESSION 'brotli');
       "
     )
