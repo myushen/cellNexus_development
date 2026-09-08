@@ -11,18 +11,25 @@ format:
 
 
 # Setup
+
+Metrics, the shared HPCell decision tree (`impute_x_approximate_distribution()`),
+and per-dataset histograms (2–3 samples in each decision) all run inside one
+targets pipeline.
+
 ```{r}
-# Get sample counts summary -----------------------------------------------
 library(targets)
 library(dplyr)
 library(stringr)
 library(glue)
 library(arrow)
 library(tidySingleCellExperiment)
+library(HPCell)
 set.seed(12345)
 Date <- "2024-07-01"
-# Identify raw counts range from new census data
 summary_store = "/vast/scratch/users/shen.m/calculate_census_raw_counts_target_store"
+metadata_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/census_samples_to_download_groups_MODIFIED.parquet"
+sample_summary_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/sample_distribution_summary.parquet"
+
 tar_script({
   library(dplyr)
   library(SummarizedExperiment)
@@ -30,6 +37,15 @@ tar_script({
   library(crew)
   library(crew.cluster)
   library(duckdb)
+  library(arrow)
+  library(purrr)
+  library(targets)
+  library(HPCell)
+  
+  metadata_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/census_samples_to_download_groups_MODIFIED.parquet"
+  sample_summary_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/sample_distribution_summary.parquet"
+  plot_dir <- "/vast/scratch/users/shen.m/calculate_census_raw_counts_target_store/plots"
+  n_samples_per_dataset <- 3
   
   # Helper to avoid repetition
   new_elastic <- function(name, mem_gb, time_min, workers, crashes_max, cpus_per_task = 2, backup = NULL) {
@@ -48,13 +64,13 @@ tar_script({
   }
   
   elastic_300      <- new_elastic("elastic_300",      300, 60 * 24, workers = 8,   crashes_max = 2)
-  elastic_160      <- new_elastic("elastic_160",      160, 60 * 24, workers = 8,   crashes_max = 2, backup = elastic_300)
-  elastic_120      <- new_elastic("elastic_120",      120, 60 * 4,  workers = 16,  crashes_max = 1, cpus_per_task = 1, backup = elastic_160)
-  elastic_80       <- new_elastic("elastic_80",        80, 60 * 4,  workers = 24,  crashes_max = 1, cpus_per_task = 1, backup = elastic_120)
-  elastic_40       <- new_elastic("elastic_40",        40, 60 * 4,  workers = 32,  crashes_max = 1, cpus_per_task = 1, backup = elastic_80)
-  elastic_20       <- new_elastic("elastic_20",        20, 60 * 4,  workers = 48,  crashes_max = 1, cpus_per_task = 1, backup = elastic_40)
-  elastic_10       <- new_elastic("elastic_10",        10, 60 * 4,  workers = 150, crashes_max = 2, cpus_per_task = 1, backup = elastic_20)
-  elastic_5_minimal <- new_elastic("elastic_5_minimal", 5, 60 * 4,  workers = 300, crashes_max = 2, cpus_per_task = 1, backup = elastic_10)
+  elastic_160 <- new_elastic("elastic_160", 160, 60 * 24, workers = 10,  crashes_max = 2)
+  elastic_120  <- new_elastic("elastic_120",  120,  60 * 4,  workers = 24, crashes_max = 1, cpus_per_task = 1, backup = elastic_160)
+  elastic_80  <- new_elastic("elastic_80",   80,  60 * 4,  workers = 35, crashes_max = 1, cpus_per_task = 1, backup = elastic_120)
+  elastic_40  <- new_elastic("elastic_40",   40,  60 * 4,  workers = 70, crashes_max = 1, cpus_per_task = 1, backup = elastic_80)
+  elastic_20  <- new_elastic("elastic_20",   20,  60 * 4,  workers = 140, crashes_max = 1, cpus_per_task = 1, backup = elastic_40)
+  elastic_10   <- new_elastic("elastic_10",   10, 60 * 4,  workers = 290, crashes_max = 2, cpus_per_task = 1, backup = elastic_20)
+  elastic_5_minimal   <- new_elastic("elastic_5_minimal",     5, 60 * 4,  workers = 440, crashes_max = 2, cpus_per_task = 1, backup = elastic_10)
   
   controllers <- crew_controller_group(
     elastic_10, elastic_20, elastic_40, elastic_80, elastic_120, elastic_160, elastic_300, elastic_5_minimal
@@ -89,7 +105,67 @@ tar_script({
   }
   
   get_positive_mode <- function(x) {
-    sort(table(x[x > 0]), decreasing = TRUE)[1] |> names() |> as.numeric()
+    pos_x <- x[x > 0]
+    pos_x <- pos_x[!is.na(pos_x)]
+    
+    if (length(pos_x) == 0) return(NA_real_)
+    
+    sort(table(pos_x), decreasing = TRUE)[1] |> names() |> as.numeric()
+  }
+  
+  # ── plotting helpers (used only in this pipeline) ──────────────────────────
+  
+  select_samples_for_distribution_hist <- function(df, n_per_dataset = 3) {
+    df |>
+      dplyr::filter(!is.na(inferred_distribution)) |>
+      dplyr::group_by(inferred_distribution, dataset_id) |>
+      dplyr::slice_sample(n = n_per_dataset) |>
+      dplyr::ungroup()
+  }
+  
+  plot_raw_counts_hist_pdf <- function(samples_to_plot,
+                                       pdf_file,
+                                       nrow = 1,
+                                       ncol = 3,
+                                       max_cells = 5e3,
+                                       hist_ylim = c(0, 1e5)) {
+    dir.create(dirname(pdf_file), recursive = TRUE, showWarnings = FALSE)
+    ncol <- min(ncol, max(nrow(samples_to_plot), 1L))
+    
+    grDevices::pdf(pdf_file, width = 8 * ncol / 3, height = 4)
+    on.exit(grDevices::dev.off(), add = TRUE)
+    graphics::par(mfrow = c(nrow, ncol), mar = c(3, 3, 3.5, 1))
+    
+    for (i in seq_len(nrow(samples_to_plot))) {
+      row <- samples_to_plot[i, ]
+      sce <- zellkonverter::readH5AD(file = row$file_name[[1]], reader = "R", use_hdf5 = TRUE)
+      if (ncol(sce) == 0) next
+      if (ncol(sce) > max_cells) sce <- sce[, sample(ncol(sce), max_cells)]
+      
+      assay_name <- names(SummarizedExperiment::assays(sce))[1]
+      x <- as.numeric(SummarizedExperiment::assay(sce, assay_name))
+      
+      gap_lab  <- if ("counts_gap_min_mean" %in% names(row)) signif(row$counts_gap_min_mean[[1]], 2) else NA
+      mode_lab <- if ("positive_mode"       %in% names(row)) round(row$positive_mode[[1]],2)                  else NA
+      
+      hist_args <- list(
+        x      = x,
+        main   = paste(
+          c(row$inferred_distribution[[1]],
+            paste(row$sample_id[[1]], sep = " | "),
+            paste0("gap=", gap_lab, " mode=", mode_lab)),
+          collapse = "\n"
+        ),
+        xlab      = "",
+        breaks    = 100,
+        cex.main  = 0.7
+      )
+      if (!is.null(hist_ylim)) hist_args$ylim <- hist_ylim
+      do.call(graphics::hist, hist_args)
+    }
+    
+    graphics::par(mfrow = c(1, 1))
+    invisible(pdf_file)
   }
   
   # Stage 1 – read SCE and return a minimal list with only what downstream needs.
@@ -127,24 +203,12 @@ tar_script({
       counts_gap_min_mean= pos_min_mean_ratio(counts_vec),
       positive_mode      = get_positive_mode(counts_vec),
       has_negative       = min(counts_vec, na.rm = TRUE) < 0,
-      max_gt_10          = max(counts_vec, na.rm = TRUE) > 10,
       all_integer        = all_int,
-      has_floating       = !all_int && all(abs(counts_vec - round(counts_vec)) < tol, na.rm = TRUE),
+      has_rounding_error = !all_int && all(abs(counts_vec - round(counts_vec)) < tol, na.rm = TRUE),
       n_cells            = sce_data$n_cells,
-      n_genes            = sce_data$n_genes
-    ) |>
-      left_join(
-        tbl(
-          dbConnect(duckdb::duckdb(), dbdir = ":memory:"),
-          sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/census_samples_to_download_groups_MODIFIED.parquet')")
-        ) |>
-          select(-observation_joinid, list_length) |>
-          distinct() |>
-          mutate(sample_id = paste0(sample_2, ".h5ad")) |>
-          collect(),
-        by   = "sample_id",
-        copy = TRUE
-      )
+      n_genes            = sce_data$n_genes,
+      is_gene_expression_likely_log = max_val < 20
+    )
   }
   
   # ── pipeline ───────────────────────────────────────────────────────────────
@@ -179,10 +243,85 @@ tar_script({
       resources = tar_resources(
         crew = tar_resources_crew(controller = "elastic_10")
       )
+    ),
+    
+    # Stage 3 – collect per-sample metrics and join with study metadata.
+    # Classification is NOT done here; this is the canonical output written to disk.
+    tar_target(
+      sample_summary_df_joined,
+      {
+        metrics <- sample_summary_df |>
+          purrr::compact() |>
+          dplyr::bind_rows()
+        
+        meta <- arrow::read_parquet(metadata_parquet) |>
+          dplyr::select(-observation_joinid, -list_length) |>
+          dplyr::distinct() |>
+          dplyr::mutate(sample_id = paste0(sample_2, ".h5ad"))
+        
+        metrics |>
+          dplyr::left_join(meta, by = "sample_id")
+      },
+      resources = tar_resources(
+        crew = tar_resources_crew(controller = "elastic_10")
+      )
+    ),
+    
+    tar_target(
+      sample_summary_parquet_file,
+      {
+        arrow::write_parquet(sample_summary_df_joined, sample_summary_parquet)
+        sample_summary_parquet
+      },
+      format = "file",
+      deployment = "main"
+    ),
+    
+    # Stage 4 – classify then sample 2–3 per dataset per decision, one PDF per group.
+    # impute_x_approximate_distribution is called here, only for plotting.
+    tar_target(
+      plot_jobs,
+      {
+        set.seed(12345)
+        sample_summary_df_joined |>
+          HPCell::impute_x_approximate_distribution(
+            counts_gap_threshold = 0.25,
+            pos_mode_threshold = 1
+          ) |>
+          select_samples_for_distribution_hist(n_per_dataset = n_samples_per_dataset) |>
+          dplyr::mutate(
+            file_name = file.path("/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01", sample_id),
+            pdf_file = file.path(
+              plot_dir,
+              inferred_distribution,
+              paste0(dataset_id, ".pdf")
+            )
+          ) |>
+          dplyr::group_by(inferred_distribution, dataset_id) |>
+          tar_group()
+      },
+      iteration = "group"
+    ),
+    
+    tar_target(
+      hist_pdf,
+      plot_raw_counts_hist_pdf(
+        plot_jobs,
+        pdf_file = unique(plot_jobs$pdf_file),
+        nrow = 1,
+        ncol = 3
+      ),
+      pattern = map(plot_jobs),
+      iteration = "list",
+      format = "file",
+      resources = tar_resources(
+        crew = tar_resources_crew(controller = "elastic_10")
+      )
     )
   )
   
 }, ask = FALSE, script = glue("{summary_store}/_targets.R"))
+
 
 job::job({
   
@@ -197,254 +336,11 @@ job::job({
 
 ```
 
+# Sample statistics summary
 ```{r}
-plot_raw_counts_hist_pdf <- function(
-    samples_to_plot,
-    pdf_file,
-    width = 8,
-    height = 8,
-    nrow = 3,
-    ncol = 3,
-    max_cells = 5e3,
-    hist_ylim = c(0, 1e6)
-) {
-  
-  pdf(pdf_file, width = width, height = height)
-  on.exit(dev.off(), add = TRUE)
-  
-  par(mfrow = c(nrow, ncol), mar = c(3, 3, 2, 1))
-  
-  samples_to_plot |>
-    dplyr::transmute(
-      file_name,
-      counts_gap = as.character(counts_gap_min_mean)
-    ) |>
-    purrr::pmap(
-      \(file_name, counts_gap) {
-        
-        sce <- zellkonverter::readH5AD(
-          file = file_name,
-          reader = "R",
-          use_hdf5 = TRUE
-        )
-        
-        if (ncol(sce) == 0) return(NULL)
-        
-        if (ncol(sce) > max_cells) {
-          sce <- sce[, sample(ncol(sce), max_cells)]
-        }
-        
-        assay_name <- names(SummarizedExperiment::assays(sce))[1]
-        
-        x <- SummarizedExperiment::assay(sce, assay_name) |>
-          as.numeric()
-        
-        hist(
-          x,
-          main = counts_gap,
-          ylim = hist_ylim,
-          breaks = 100
-        )
-        
-        invisible(NULL)
-      },
-      .progress = TRUE
-    )
-  
-  par(mfrow = c(1, 1))
-}
-
+sample_summary_df <- tar_read(
+  sample_summary_df_joined,
+  store = glue("{summary_store}/_targets")
+)
 ```
 
-```{r}
-sample_summary_df = tar_read(sample_summary_df, store = glue("{summary_store}/_targets")) |> bind_rows() |>
-  mutate(max_gt_20 = ifelse(max_val > 20, TRUE, FALSE))
-
-sample_summary_df |> write_parquet("/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/sample_distribution_summary.parquet")
-```
-
-```{r echo=FALSE}
-sample_summary_df = read_parquet("/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/sample_distribution_summary.parquet")
-```
-
-# Sample statstics summary
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap_min_mean>0.25, positive_mode>1)
-```
-
-# Plot sample in dataset
-## Row one
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(1)
-
-samples_to_plot <- sample_summary_df |> filter(!all_integer, !has_negative, !max_gt_20, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 1) |>
-  ungroup()
-
-```
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot, 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/samples_pos_lt20_decimal_raw_counts_hist.pdf", 
-                         transform = "none")
-
-```
-
-
-## Row two
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(2)
-samples_to_plot <- sample_summary_df |> filter( !has_negative, !max_gt_20, !all_integer, !has_floating, counts_gap>=0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 1) |>
-  ungroup()
-```
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot, 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot2.pdf", 
-                         transform = "none")
-```
-
-## Row three
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating,counts_gap>=0.25) |> dplyr::slice(3)
-samples_to_plot <- sample_summary_df |> filter(!has_negative, max_gt_20, !all_integer, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 3) |>
-  ungroup()
-```
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot, 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot3.pdf", 
-                         transform = "none")
-```
-
-## Row four
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating,counts_gap>=0.25) |> dplyr::slice(4)
-samples_to_plot <- sample_summary_df |> filter(!has_negative, max_gt_20, !all_integer, !has_floating,counts_gap>=0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot, 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot4.pdf", 
-                         transform = "none")
-```
-
-## Row five
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(5)
-samples_to_plot <- sample_summary_df |> filter(!has_negative,max_gt_20, all_integer, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot, 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot5.pdf", 
-                         transform = "none")
-```
-
-
-## Row six
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(6)
-samples_to_plot <- sample_summary_df |> filter(!has_negative, max_gt_20, all_integer, !has_floating, counts_gap>=0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot |> head(10), 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot6.pdf", 
-                         transform = "none")
-```
-
-
-## Row seven
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(7)
-samples_to_plot <- sample_summary_df |> filter(has_negative, !max_gt_20, !all_integer, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot |> head(10), 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot7.pdf", 
-                         transform = "none")
-```
-
-## Row eight
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(8)
-samples_to_plot <- sample_summary_df |> filter(has_negative, !max_gt_20, !all_integer, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot |> head(10), 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot8.pdf", 
-                         transform = "none")
-```
-
-## Row nine
-```{r}
-sample_summary_df |> dplyr::count(has_negative, max_gt_20, all_integer, has_floating, counts_gap>=0.25) |> dplyr::slice(9)
-samples_to_plot <- sample_summary_df |> filter(has_negative, !max_gt_20, !all_integer, !has_floating, counts_gap<0.25) |> 
-  arrange(n_cells) |>
-  group_by(dataset_id) |>
-  slice_sample(n = 2) |>
-  ungroup()
-```
-
-
-```{r eval=FALSE}
-plot_raw_counts_hist_pdf(samples_to_plot |> head(10), 
-                         h5ad_dir = "/vast/scratch/users/shen.m/Census/split_h5ad_based_on_sample_id/2024-07-01/",
-                         pdf_file = "/home/users/allstaff/shen.m/projects/cellNexus/plot9.pdf", 
-                         transform = "none")
-```
-
-# Final slides and decision
-
-```{r}
-#| label: display-pptx
-#| echo: false
-#| warning: false
-#| message: false
-
-pptx_file <- "~/projects/cellNexus/census_distribution_decision.pptx"  
-pptx_file
-```

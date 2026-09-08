@@ -6,7 +6,7 @@ library(zellkonverter)
 
 cache = "~/scratch/cache_temp"
 
-x = get_metadata(cache_directory = cache, cloud_metadata = NULL, local_metadata = "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.2.2.1.parquet")
+x = get_metadata(cache_directory = cache, cloud_metadata = NULL, local_metadata = "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.4.0.parquet")
 x = x |>
   keep_quality_cells()
 x = x |> dplyr::filter(

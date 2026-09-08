@@ -163,8 +163,9 @@ dbExecute(con, "
   SELECT 
     sample_2 AS sample_id,
     count_upper_bound,
-    feature_thresh AS nfeature_expressed_thresh,
-    method_to_apply AS inverse_transform
+    feature_thresh AS nfeature_expressed_threshold,
+    inferred_distribution,
+    method_to_apply AS inversed_inferred_distribution
   FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/updated_transform_sample_tbl_2024_Jul.parquet')
 ")
 
@@ -193,7 +194,7 @@ copy_query <- "
         
       WHERE cell_metadata.dataset_id NOT IN ('99950e99-2758-41d2-b2c9-643edcdf6d82', '9fcb0b73-c734-40a5-be9c-ace7eea401c9') -- (THESE TWO DATASETS DOESNT contain meaningful data - no observation_joinid etc), thus was excluded in the final metadata.
          
-  ) TO  '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_0_mengyuan.parquet' -- MODIFY HERE: output merged metadata parquet
+  ) TO  '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_0_mengyuan.parquet' -- MODIFY HERE: output merged metadata parquet
   (FORMAT PARQUET, COMPRESSION 'gzip');
 "
 
@@ -212,18 +213,18 @@ job::job({
   con <- dbConnect(duckdb::duckdb(), dbdir = ":memory:")
   
   # Create a view for cell_annotation in DuckDB
-  # MODIFY HERE: v1_2_2 merged metadata parquet path inside the SQL string below (should match the COPY TO output above)
+  # MODIFY HERE: v1_3_0 merged metadata parquet path inside the SQL string below (should match the COPY TO output above)
   dbExecute(con, "
   CREATE VIEW cell_metadata AS
   SELECT *
-  FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_0_mengyuan.parquet')
+  FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_0_mengyuan.parquet')
 ")
   
   # MODIFY HERE: cell_id dictionary parquet path inside the SQL string below
   dbExecute(con, "
   CREATE VIEW cell_map AS
   SELECT *
-  FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/file_id_cell_id_dict_v1_2_0_Jul_2024.parquet')
+  FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/file_id_cell_id_dict_v1_3_0_Jul_2024.parquet')
 ")
   
   # Perform the left join and save to Parquet
@@ -237,7 +238,7 @@ job::job({
         ON cell_metadata.cell_id = cell_map.cell_id
         AND cell_metadata.file_id_cellNexus_single_cell = cell_map.file_id_cellNexus_single_cell
 
-  ) TO  '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_1_mengyuan.parquet' -- MODIFY HERE: output final metadata parquet with new cell IDs (v1_3_2)
+  ) TO  '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_1_mengyuan.parquet' -- MODIFY HERE: output final metadata parquet with new cell IDs (v1_3_2)
   (FORMAT PARQUET, COMPRESSION 'gzip');
 "
   
@@ -258,12 +259,12 @@ job::job({
 cell_metadata = 
   tbl(
     dbConnect(duckdb::duckdb(), dbdir = ":memory:"),
-    sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_1_mengyuan.parquet')")
+    sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_1_mengyuan.parquet')")
   )
 
 library(targets)
 library(tidyverse)
-store_file_cellNexus = "/vast/scratch/users/shen.m/targets_prepare_database_split_datasets_chunked_1_7_0_single_cell" # MODIFY HERE: targets store directory for this pipeline
+store_file_cellNexus = "/vast/scratch/users/shen.m/targets_prepare_database_split_datasets_chunked_1_8_0_single_cell" # MODIFY HERE: targets store directory for this pipeline
 
 tar_script({
   library(dplyr)
@@ -291,14 +292,14 @@ tar_script({
   }
   
   # Small → large, with fallbacks to the next size up
-  elastic_160 <- new_elastic("elastic_160", 160, 60 * 24, workers = 8,  crashes_max = 2)
-  elastic_120  <- new_elastic("elastic_120",  120,  60 * 4,  workers = 16, crashes_max = 1, cpus_per_task = 1, backup = elastic_160)
-  elastic_80  <- new_elastic("elastic_80",   80,  60 * 4,  workers = 24, crashes_max = 1, cpus_per_task = 1, backup = elastic_120)
-  elastic_40  <- new_elastic("elastic_40",   40,  60 * 4,  workers = 32, crashes_max = 1, cpus_per_task = 1, backup = elastic_80)
-  elastic_20  <- new_elastic("elastic_20",   20,  60 * 4,  workers = 48, crashes_max = 1, cpus_per_task = 1, backup = elastic_40)
-  elastic_10   <- new_elastic("elastic_10",   10, 60 * 4,  workers = 150, crashes_max = 2, cpus_per_task = 1, backup = elastic_20)
-
-  elastic_5_minimal   <- new_elastic("elastic_5_minimal",     5, 60 * 4,  workers = 300, crashes_max = 2, cpus_per_task = 1, backup = elastic_10)
+  elastic_160 <- new_elastic("elastic_160", 160, 60 * 24, workers = 10,  crashes_max = 2)
+  elastic_120  <- new_elastic("elastic_120",  120,  60 * 4,  workers = 24, crashes_max = 1, cpus_per_task = 1, backup = elastic_160)
+  elastic_80  <- new_elastic("elastic_80",   80,  60 * 4,  workers = 35, crashes_max = 1, cpus_per_task = 1, backup = elastic_120)
+  elastic_40  <- new_elastic("elastic_40",   40,  60 * 4,  workers = 70, crashes_max = 1, cpus_per_task = 1, backup = elastic_80)
+  elastic_20  <- new_elastic("elastic_20",   20,  60 * 4,  workers = 140, crashes_max = 1, cpus_per_task = 1, backup = elastic_40)
+  elastic_10   <- new_elastic("elastic_10",   10, 60 * 4,  workers = 290, crashes_max = 2, cpus_per_task = 1, backup = elastic_20)
+  
+  elastic_5_minimal   <- new_elastic("elastic_5_minimal",     5, 60 * 4,  workers = 440, crashes_max = 2, cpus_per_task = 1, backup = elastic_10)
   
   # Group for targets (small → large)
   controllers <- crew_controller_group(
@@ -791,17 +792,17 @@ tar_script({
     
     # The input DO NOT DELETE
     tar_target(my_store, "/vast/scratch/users/shen.m/cellNexus/2024-07-01/process_updated_samples_transform_hpcell_target_store_v1", deployment = "main"), # MODIFY HERE: HPCell targets store to read SCEs from
-    tar_target(cache_directory, "/vast/scratch/users/shen.m/cellNexus/hca_2024/0.4.1", deployment = "main"), # MODIFY HERE: output cache directory for saved anndata files
+    tar_target(cache_directory, "/vast/scratch/users/shen.m/cellNexus/hca_2024/0.5.0", deployment = "main"), # MODIFY HERE: output cache directory for saved anndata files
     tar_target(
       cell_metadata,
-      "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_1_mengyuan.parquet", # MODIFY HERE: final metadata parquet (should match the COPY TO output above)
+      "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_1_mengyuan.parquet", # MODIFY HERE: final metadata parquet (should match the COPY TO output above)
       packages = c( "arrow","dplyr","duckdb")
       
     ),
     
     tar_target(
       cell_id_dict,
-      "/vast/projects//cellxgene_curated/metadata_cellxgene_mengyuan/file_id_cell_id_dict_v1_2_0_Jul_2024.parquet", # MODIFY HERE: cell_id dictionary parquet
+      "/vast/projects//cellxgene_curated/metadata_cellxgene_mengyuan/file_id_cell_id_dict_v1_3_0_Jul_2024.parquet", # MODIFY HERE: cell_id dictionary parquet
       packages = c( "arrow","dplyr","duckdb")
     ),
     
@@ -926,7 +927,7 @@ tar_script({
         crew = tar_resources_crew(controller = "elastic_20")
       )
     ),
-
+    
     tar_target(
       saved_dataset_rank,
       insistent_save_rank_per_cell(dataset_id_sce, paste0(cache_directory, "/rank")),
@@ -936,7 +937,7 @@ tar_script({
         crew = tar_resources_crew(controller = "elastic_5_minimal")
       )
     ),
-
+    
     tar_target(
       saved_sct,
       save_anndata_sct(dataset_id_sct, paste0(cache_directory, "/sct")),
@@ -944,6 +945,54 @@ tar_script({
       packages = c("tidySingleCellExperiment", "SingleCellExperiment", "tidyverse", "glue", "HPCell", "digest", "scater", "arrow", "dplyr", "duckdb", "BiocParallel", "parallelly", "HDF5Array"),
       resources = tar_resources(
         crew = tar_resources_crew(controller = "elastic_5_minimal")
+      )
+    ),
+    
+    # Filter cell_metadata by removing cells absent from the SCE outputs.
+    # Writes missing cell IDs to a temp parquet so DuckDB can anti-join at scale.
+    tar_target(
+      filtered_cell_metadata_parquet_file,
+      {
+        cells_to_remove_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cells_to_remove_in_metadata_Jul_2024.parquet"
+        output_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_1_filtered_missing_cells_mengyuan.parquet" # MODIFY HERE: output parquet after filtering missing cells
+        if (file.exists(cells_to_remove_parquet)) {
+          stop(glue::glue(
+            "'{cells_to_remove_parquet}' already exists. ",
+            "Delete it manually if you want to overwrite, then re-run."
+          ))
+        }
+
+        missing_cells_tbl |>
+          tidyr::unnest(missing_cells) |>
+          arrow::write_parquet(cells_to_remove_parquet)
+        
+        con <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
+        on.exit(DBI::dbDisconnect(con), add = TRUE)
+        
+        cell_metadata_tbl <- dplyr::tbl(
+          con,
+          dplyr::sql(paste0("SELECT * FROM read_parquet('", cell_metadata, "')"))
+        )
+        
+        missing_cells_db <- dplyr::tbl(
+          con,
+          dplyr::sql(glue::glue("SELECT * FROM read_parquet('{cells_to_remove_parquet}')"))
+        )
+        
+        filtered <- cell_metadata_tbl |>
+          dplyr::anti_join(missing_cells_db, by = c("observation_joinid", "dataset_id"))
+        
+        query_sql <- dbplyr::remote_query(filtered)
+        DBI::dbExecute(con, glue::glue(
+          "COPY ({query_sql}) TO '{output_parquet}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+        ))
+        
+        output_parquet
+      },
+      format = "file",
+      packages = c("dplyr", "duckdb", "arrow", "glue", "tidyr", "dbplyr"),
+      resources = tar_resources(
+        crew = tar_resources_crew(controller = "elastic_120")
       )
     )
   )
@@ -960,27 +1009,5 @@ job::job({
   
 })
 
-missing_cells_tbl = tar_read(missing_cells_tbl, store = store_file_cellNexus) |> 
-  unnest(missing_cells)
-
-#missing_cells_tbl |> write_parquet("/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cells_to_remove_in_metadata_Jul_2024.parquet")
-con <- dbplyr::remote_con(cell_metadata)  
-
-missing_cells_tbl <- dplyr::tbl(
-  con,
-  dplyr::sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cells_to_remove_in_metadata_Jul_2024.parquet')")
-)
-
-filtered_cell_metadata <- cell_metadata |>
-  anti_join(missing_cells_tbl, by = c("observation_joinid", "cell_id"))
-
-query_sql <- dbplyr::remote_query(filtered_cell_metadata)
-
-DBI::dbExecute(
-  con,
-  glue::glue(
-    "COPY ({query_sql}) TO '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_1_filtered_missing_cells_mengyuan.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)"
-  )
-) # MODIFY HERE: output parquet after filtering missing cells
 
 

@@ -51,7 +51,7 @@ job::job({
   # Single DuckDB connection: do the heavy transforms in SQL (avoid read/write/read on 50M+ rows)
   con <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
   
-  raw_path <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_7_1_filtered_missing_cells_mengyuan.parquet"  # MODIFY HERE: Metadata input parquet path
+  raw_path <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_metadata_cell_type_consensus_v1_8_1_filtered_missing_cells_mengyuan.parquet"  # MODIFY HERE: Metadata input parquet path
   
   DBI::dbExecute(con, glue::glue("
   CREATE VIEW cell_metadata_raw AS
@@ -223,6 +223,15 @@ job::job({
   FROM read_parquet('/vast/projects/cellxgene_curated/cellNexus/imputed_ethnicity_df.parquet')
 ")
   
+  # Register HPCell transform sanity-check annotations directly from the targets store.
+  # Columns used: sample_id, sanity_check_max_lt_10, sanity_check_min_lt_0, sanity_check_rounding_error
+  # MODIFY HERE: targets store path
+  sanity_checked_df <- targets::tar_read(
+    sanity_checked_sample_stats_combined,
+    store = "/vast/scratch/users/shen.m/cellNexus/2024-07-01/process_updated_samples_transform_hpcell_target_store_v1"
+  )
+  duckdb::duckdb_register(con, "sanity_check_transformed_df", sanity_checked_df)
+  
   # Perform left join and save to parquet
   # MODIFY HERE: output metadata parquet path and atlas_id
   copy_query <- "
@@ -233,7 +242,14 @@ job::job({
       lowConf_ethnicity_df.low_confidence_ethnicity,
       sample_celltype_count.\".aggregated_cells\",
       COALESCE(imputed_ethnicity_df.imputed_ethnicity, cell_metadata.self_reported_ethnicity) AS imputed_ethnicity, -- Use imputed_ethnicity if present
-      'hca_2024/0.4.1' AS atlas_id
+      -- max_lt_10,min_lt_0,rounding_error: compact string encoding of three per-sample sanity-check flags
+      -- format: \"max_lt_10,min_lt_0,rounding_error\"  e.g. \"1,0,0\"
+      CONCAT_WS(',',
+        CAST(COALESCE(sanity_check_transformed_df.sanity_check_max_lt_10,      0) AS VARCHAR),
+        CAST(COALESCE(sanity_check_transformed_df.sanity_check_min_lt_0,       0) AS VARCHAR),
+        CAST(COALESCE(sanity_check_transformed_df.sanity_check_rounding_error, 0) AS VARCHAR)
+      ) AS \"max_lt_10,min_lt_0,rounding_error\",
+      'hca_2024/0.5.0' AS atlas_id
       
     FROM cell_metadata
     
@@ -245,11 +261,11 @@ job::job({
     
     LEFT JOIN sample_celltype_count
       ON cell_metadata.sample_id = sample_celltype_count.sample_id AND cell_metadata.cell_type_unified_ensemble = sample_celltype_count.cell_type_unified_ensemble
-      
-    
-    
 
-  ) TO '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.3.1.parquet'
+    LEFT JOIN sanity_check_transformed_df
+      ON cell_metadata.sample_id = sanity_check_transformed_df.sample_id
+
+  ) TO '/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.4.0.parquet'
   (FORMAT PARQUET, COMPRESSION 'zstd');
   "
   
@@ -265,7 +281,7 @@ job::job({
 })
 
 x = tbl(dbConnect(duckdb::duckdb(), dbdir = ":memory:"),  
-        sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.3.1.parquet')") ) # MODIFY HERE: input metadata parquet path
+        sql("SELECT * FROM read_parquet('/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.4.0.parquet')") ) # MODIFY HERE: input metadata parquet path
 
 # Split cell_metadata to cellnexus_metadata, original census_metadata, and metacell_metadata (host Rshiny on smaller file)
 # ---- Split: read metadata.x.y.z.parquet once, write smaller derivative Parquets ----
@@ -275,7 +291,7 @@ job::job({
   con <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
   
-  input_metadata <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.3.1.parquet" # MODIFY HERE: input metadata parquet path
+  input_metadata <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/metadata.v2024.2.4.0.parquet" # MODIFY HERE: input metadata parquet path
   out_dir <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan"
   
   DBI::dbExecute(
@@ -300,10 +316,10 @@ job::job({
     "sex", "sex_ontology_term_id", "tissue", "tissue_ontology_term_id", "citation",
     "collection_id", "dataset_version_id", "default_embedding", "published_at", "raw_data_location",
     "revised_at", "primary_cell_count", "schema_version", "tissue_type", "title",
-    "tombstone", "x_approximate_distribution", "explorer_url", "cell_count", "feature_count", 
+    "tombstone", "x_approximate_distribution", "explorer_url", "cell_count", 
     "filesize", "filetype", "mean_genes_per_cell", "suspension_type", "url", "experiment___",
     "sample_", "sample_heuristic", "sample_chunk", "cell_chunk", "sample_pseudobulk_chunk",
-    "run_from_cell_id"
+    "run_from_cell_id", "tissue_groups" # fragile
   )
   
   # CellNexus metadata (smaller file for Shiny): drop heavy / internal columns by name patterns
@@ -323,7 +339,7 @@ job::job({
         SELECT {DBI::SQL(select_cellnexus)}
         FROM metadata
       )
-      TO {DBI::dbQuoteString(con, file.path(out_dir, 'hca2024_v2.3.2.parquet'))}
+      TO {DBI::dbQuoteString(con, file.path(out_dir, 'hca2024_v2.4.0.parquet'))}
       (FORMAT PARQUET, COMPRESSION 'brotli');
       "
     )
@@ -341,7 +357,7 @@ job::job({
   #     "data_driven_ensemble", "ensemble_joinid", "observation_originalid",  "citation",
   #     "collection_id", "dataset_version_id", "default_embedding", "published_at", "raw_data_location",
   #     "revised_at", "primary_cell_count", "schema_version", "tissue_type", "title",
-  #     "tombstone", "x_approximate_distribution", "explorer_url", "cell_count", "feature_count", 
+  #     "tombstone", "x_approximate_distribution", "explorer_url", "cell_count", 
   #     "filesize", "filetype", "mean_genes_per_cell", "suspension_type", "url"
   #   ),
   #   cols
@@ -386,7 +402,7 @@ job::job({
   print("Done.")
 })
 
-
 # (Optional) Check whether cellnexus_metadata parquet can be optimised further
 # source("~/git_control/cellNexus/dev/data_optimisation_script.R")
+
 

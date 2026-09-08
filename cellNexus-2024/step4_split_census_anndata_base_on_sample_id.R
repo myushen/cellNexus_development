@@ -7,6 +7,8 @@ library(tidybulk)
 library(tidySingleCellExperiment)
 library(stringr)
 library(arrow)
+library(crew)
+library(crew.cluster)
 
 version <- "2024-07-01"
 anndata_path_based_on_dataset_id_to_read <- file.path("/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/h5ad/", version)
@@ -81,24 +83,50 @@ subset_samples <- function(dataset_id, observation_joinid, sample_id) {
   sce[, cells_to_subset]
 }
 
-computing_resources = crew.cluster::crew_controller_slurm(
-  #slurm_memory_gigabytes_per_cpu = 40, 
-  slurm_memory_gigabytes_per_cpu = 25, 
-  slurm_cpus_per_task = 1,
-  workers = 100,
-  verbose = TRUE
-)
+new_elastic <- function(name, mem_gb, time_min, workers, crashes_max, cpus_per_task = 2, backup = NULL) {
+  crew_controller_slurm(
+    name = name,
+    workers = workers,
+    crashes_max = crashes_max,
+    seconds_idle = 30,
+    options_cluster = crew_options_slurm(
+      memory_gigabytes_required = mem_gb,
+      cpus_per_task = cpus_per_task,
+      time_minutes = time_min
+    ),
+    backup = backup
+  )
+}
 
+# Small → large, with fallbacks to the next size up
+elastic_160 <- new_elastic("elastic_160", 160, 60 * 24, workers = 10,  crashes_max = 2)
+elastic_120  <- new_elastic("elastic_120",  120,  60 * 4,  workers = 24, crashes_max = 1, cpus_per_task = 1, backup = elastic_160)
+elastic_80  <- new_elastic("elastic_80",   80,  60 * 4,  workers = 35, crashes_max = 1, cpus_per_task = 1, backup = elastic_120)
+elastic_40  <- new_elastic("elastic_40",   40,  60 * 4,  workers = 70, crashes_max = 1, cpus_per_task = 1, backup = elastic_80)
+elastic_20  <- new_elastic("elastic_20",   20,  60 * 4,  workers = 140, crashes_max = 1, cpus_per_task = 1, backup = elastic_40)
+elastic_10   <- new_elastic("elastic_10",   10, 60 * 4,  workers = 290, crashes_max = 2, cpus_per_task = 1, backup = elastic_20)
+
+elastic_5_minimal   <- new_elastic("elastic_5_minimal",     5, 60 * 4,  workers = 440, crashes_max = 2, cpus_per_task = 1, backup = elastic_10)
+
+# Group for targets (small → large)
+controllers <- crew_controller_group(
+  elastic_10, elastic_20, elastic_40, elastic_80, elastic_120, elastic_160, elastic_5_minimal
+)
 tar_option_set(
-  memory = "transient",
-  garbage_collection = TRUE,
-  storage = "worker",
-  retrieval = "worker",
-  format = "qs",
-  #cue = tar_cue(mode = "never"),
+  memory = "transient", 
+  garbage_collection = 100, 
+  storage = "worker", 
+  retrieval = "worker", 
+  error = "continue", 
   cue = tar_cue(mode = "thorough"),
-  error = "continue",
-  controller = computing_resources
+  format = "qs",
+  #debug = "dataset_id_sct_ea377f6e2d0ae2b7",
+  workspace_on_error = TRUE,
+  controller = controllers, 
+  trust_object_timestamps = TRUE,
+  resources = tar_resources(
+    crew = tar_resources_crew(controller = "elastic_5_minimal")
+  ) 
 )
 
 list(
@@ -117,7 +145,10 @@ list(
       #       from Census does not contain any meaningful data (no observation_joinid in colData), thus produced 
       #       not meaningful samples (0 cells). They need to be deleted.
       
-      filter(!dataset_id %in% c("99950e99-2758-41d2-b2c9-643edcdf6d82", "9fcb0b73-c734-40a5-be9c-ace7eea401c9" ))
+      filter(!dataset_id %in% c("99950e99-2758-41d2-b2c9-643edcdf6d82", "9fcb0b73-c734-40a5-be9c-ace7eea401c9" )),
+    resources = tar_resources(
+      crew = tar_resources_crew(controller = "elastic_20")
+    ) 
   ),
   tar_target(
     sliced_sce,
@@ -129,8 +160,8 @@ list(
   )
 )
 
-# tar_make(store = glue::glue("~/scratch/Census_final_run/{version}_new/split_h5ad_based_on_sample_id_target_store"),
-#          script = "~/git_control/HPCell/dev/cellnexus-2024-scripts/step4_split_census_anndata_base_on_sample_id.R",
+# tar_make(store = glue::glue("/vast/scratch/users/shen.m/Census_final_run/{version}_new/split_h5ad_based_on_sample_id_target_store"),
+#          script = "~/git_control/cellNexus_development/cellNexus-2024/step4_split_census_anndata_base_on_sample_id.R",
 #          reporter = "summary")
 
 # Debug if needed
