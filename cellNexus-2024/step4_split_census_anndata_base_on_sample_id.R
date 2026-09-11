@@ -156,6 +156,7 @@ list(
                    grouped_observation_joinid_per_sample$observation_joinid,
                    grouped_observation_joinid_per_sample$sample_2)  |>
       save_data(file_name = grouped_observation_joinid_per_sample$sample_2),
+    format = "file", 
     pattern = map(grouped_observation_joinid_per_sample)
   )
 )

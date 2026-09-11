@@ -1,6 +1,6 @@
 library(targets)
 library(tidyverse)
-store_file_cellNexus = "/vast/scratch/users/shen.m/targets_prepare_database_split_datasets_chunked_1_0_0_pseudobulk_2025"
+store_file_cellNexus = "/vast/scratch/users/shen.m/targets_prepare_database_split_datasets_chunked_1_1_0_pseudobulk_2025"
 my_store = "/vast/scratch/users/shen.m/cellNexus_target_store_2025-11-08"
 
 tar_script({
@@ -221,10 +221,10 @@ tar_script({
     
     # The input DO NOT DELETE
     tar_target(my_store, "/vast/scratch/users/shen.m/cellNexus_target_store_2025-11-08", deployment = "main"), # MODIFY HERE: HPCell targets store (must match my_store above)
-    tar_target(cache_directory, "/vast/scratch/users/shen.m/cellNexus/hca_2025/0.1.1/pseudobulk", deployment = "main"), # MODIFY HERE: output cache directory for saved pseudobulk anndata files
+    tar_target(cache_directory, "/vast/scratch/users/shen.m/cellNexus/hca_2025/0.2.0/pseudobulk", deployment = "main"), # MODIFY HERE: output cache directory for saved pseudobulk anndata files
     tar_target(
       cell_metadata,
-      "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Jan_2026/cell_metadata_cell_type_consensus_v1_0_2_mengyuan.parquet", # MODIFY HERE: cell metadata parquet (output of step6/step7)
+      "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Jan_2026/cell_metadata_cell_type_consensus_v1_1_1_mengyuan.parquet", # MODIFY HERE: cell metadata parquet (output of step6/step7)
       packages = c( "arrow","dplyr","duckdb")
       
     ),

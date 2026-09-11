@@ -1,6 +1,6 @@
 ---
 title: "Single-Cell Metadata QC Comparison"
-subtitle: "metadata.v2024.2.3.1.parquet (HCA CellxGene 2024) vs metadata.v2025.1.0.1.parquet (HCA CellxGene 2025)"
+subtitle: "metadata.v2024.2.4.0.parquet (HCA CellxGene 2024) vs metadata.v2025.0.2.0.parquet (HCA CellxGene 2025)"
 author: "Mengyuan Shen <shen.m@wehi.edu.au>"
 date: today
 format:
@@ -53,8 +53,8 @@ new tissues in 2025, and quality-control (QC) metrics:
 
 | Label | File | Atlas |
 |---|---|---|
-| **v2.3.1** | `metadata.v2024.2.3.1.parquet` | `cellxgene_2024` |
-| **v2025.1.0.1** | `metadata.v2025.1.0.1.parquet` | `cellxgene_2025` |
+| **v2024.2.4.0** | `metadata.v2024.2.4.0.parquet` | `cellxgene_2024` |
+| **v2025.0.2.0** | `metadata.v2025.0.2.0.parquet` | `cellxgene_2025` |
 
 Three QC flags are examined:
 
@@ -68,8 +68,8 @@ Three QC flags are examined:
 
 ```{r load-data}
 cells <- get_metadata(cloud_metadata = get_metadata_url(databases = c(
-  "metadata.v2024.2.3.1.parquet",
-  "metadata.v2025.1.0.1.parquet"
+  "metadata.v2024.2.4.0.parquet",
+  "metadata.v2025.0.2.0.parquet"
 )))
 
 atlas_ids <- cells |>
@@ -80,7 +80,7 @@ atlas_ids <- cells |>
 
 pal <- setNames(c("#F28E2B", "#4E79A7"), atlas_ids)
 atlas_labels <- setNames(
-  c("HCA 2024 (v2.3.1)", "HCA 2025 (v1.0.1)"),
+  c("HCA 2024 (v2.4.0)", "HCA 2025 (v0.2.0)"),
   atlas_ids
 )
 
@@ -185,17 +185,17 @@ ggplot(corpus_summary_long, aes(x = atlas_label, y = count, fill = atlas_id)) +
 Tissues present in the **2025** atlas but not in the **2024** atlas.
 
 ```{r new-tissues}
-tissues_groups_24 <- cells |> 
+tissues_24 <- cells |> 
   filter(atlas_id |> str_detect("hca_2024")) |>
-  distinct(tissue_groups) |>
-  pull(tissue_groups)
+  distinct(tissue) |>
+  pull(tissue)
 
-tissues_groups_25 <- cells |> 
+tissues_25 <- cells |> 
   filter(atlas_id |> str_detect("hca_2025")) |>
-  distinct(tissue_groups) |>
-  pull(tissue_groups)
+  distinct(tissue) |>
+  pull(tissue)
 
-setdiff(tissues_groups_25, tissues_groups_24)
+setdiff(tissues_25, tissues_24)
 ```
 
 ---
