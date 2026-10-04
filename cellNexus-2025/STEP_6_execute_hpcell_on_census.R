@@ -205,9 +205,9 @@ job::job({
     # # metacell
     # cluster_metacell(target_input = "sce_transformed",  group_by = "cell_type_unified_ensemble") |>
     #
-    # # Cell Chat
-    # ligand_receptor_cellchat(target_input = "sce_transformed",
-    #                          group_by = "cell_type_unified_ensemble") |>
+    # Cell Chat
+    ligand_receptor_cellchat(target_input = "sce_transformed",
+                             group_by = "cell_type_unified_ensemble") |>
 
     print()
 })
@@ -229,6 +229,7 @@ tar_script(
     my_store <- "/vast/scratch/users/shen.m/cellNexus_target_store_2025-11-08" # MODIFY HERE: HPCell targets store (must match my_store above)
     cell_metadata_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Jan_2026/cell_metadata.parquet"
     cell_annotation_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Jan_2026/cell_annotation.parquet"
+    lr_parquet               <- "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Jan_2026/cellNexus_lr_signaling_pathway_strength.parquet"
 
     elastic_500 <- crew_controller_slurm(
       name = "elastic_500",
@@ -247,6 +248,7 @@ tar_script(
       garbage_collection = 100,
       error              = "continue",
       format             = "qs",
+      cue                = tar_cue(mode = "never"), 
       controller         = crew_controller_group(elastic_500)
     )
 
@@ -315,6 +317,21 @@ tar_script(
             final_sql, cell_annotation_parquet
           ))
           cell_annotation_parquet
+        },
+        format = "file",
+        resources = tar_resources(
+          crew = tar_resources_crew(controller = "elastic_500")
+        )
+      ),
+      
+      # Cellchat output
+      tar_target(
+        lr_parquet_file,
+        {
+          ligand_receptor_tbl <- tar_read(ligand_receptor_tbl, store = my_store) |>
+            dplyr::bind_rows()
+          ligand_receptor_tbl |> arrow::write_parquet(lr_parquet, compression = "zstd")
+          lr_parquet
         },
         format = "file",
         resources = tar_resources(

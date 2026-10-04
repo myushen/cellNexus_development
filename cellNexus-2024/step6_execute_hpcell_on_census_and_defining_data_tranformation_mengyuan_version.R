@@ -213,9 +213,9 @@ job::job({
     # # metacell
     # cluster_metacell(target_input = "sce_transformed",  group_by = "cell_type_unified_ensemble") |>
     
-    # # Cell Chat
-    # ligand_receptor_cellchat(target_input = "sce_transformed",
-    #                          group_by = "cell_type_unified_ensemble") |>
+    # Cell Chat
+    ligand_receptor_cellchat(target_input = "sce_transformed",
+                             group_by = "cell_type_unified_ensemble") |>
     
     print()
   
@@ -377,7 +377,7 @@ job::job({
 # ── Paths (MODIFY HERE) ────────────────────────────────────────────────────────
 cell_metadata_parquet   <- "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Apr_2024/cell_metadata.parquet"
 cell_annotation_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_annotation_2024_Jul.parquet"
-lr_duckdb               <- "/vast/scratch/users/shen.m/cellNexus/cellNexus_lr_signaling_pathway_strength.duckdb"
+lr_parquet               <- "/vast/scratch/users/shen.m/cellNexus/cellNexus_lr_signaling_pathway_strength.parquet"
 metadata_assembly_store <- "/vast/scratch/users/shen.m/cellNexus/2024-07-01/step6_cell_metadata_assembly_store"
 
 # ── Targets pipeline: assemble cell-level annotation ─────────────────────────
@@ -392,7 +392,7 @@ tar_script({
   my_store                <- "/vast/scratch/users/shen.m/cellNexus/2024-07-01/process_updated_samples_transform_hpcell_target_store_v1" # MODIFY HERE: HPCell targets store (must match my_store above)
   cell_metadata_parquet   <- "/vast/projects/cellxgene_curated/metadata_cellxgenedp_Apr_2024/cell_metadata.parquet"
   cell_annotation_parquet <- "/vast/projects/cellxgene_curated/metadata_cellxgene_mengyuan/cell_annotation_2024_Jul.parquet"
-  #lr_duckdb               <- "/vast/scratch/users/shen.m/cellNexus/cellNexus_lr_signaling_pathway_strength.duckdb"
+  lr_parquet               <- "/vast/scratch/users/shen.m/cellNexus/cellNexus_lr_signaling_pathway_strength.parquet"
   
   elastic_500 <- crew_controller_slurm(
     name         = "elastic_500",
@@ -411,6 +411,7 @@ tar_script({
     garbage_collection = 100,
     error              = "continue",
     format             = "qs",
+    cue                = tar_cue(mode = "never"), 
     controller         = crew_controller_group(elastic_500)
   )
   
@@ -486,17 +487,17 @@ tar_script({
     
     # Cellchat output
     tar_target(
-      lr_duckdb_file,
+      lr_parquet_file,
       {
         ligand_receptor_tbl <- tar_read(ligand_receptor_tbl, store = my_store) |>
           dplyr::bind_rows()
-        con <- DBI::dbConnect(duckdb::duckdb(), dbdir = lr_duckdb)
-        on.exit(DBI::dbDisconnect(con), add = TRUE)
-        duckdb::dbWriteTable(con, "lr_pathway_table", ligand_receptor_tbl, overwrite = TRUE)
-        lr_duckdb
+        ligand_receptor_tbl |> arrow::write_parquet(lr_parquet, compression = "zstd")
+        lr_parquet
       },
       format = "file",
-      deployment = "main"
+      resources = tar_resources(
+        crew = tar_resources_crew(controller = "elastic_500")
+      )
     )
   )
   
