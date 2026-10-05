@@ -129,8 +129,9 @@ tar_script({
           tissue = if_else(is.na(sample_location), "prostate", sample_location),
           collection_id = collection_id,
           # The study GSE172301 was accessed using cellNexus and all others were accessed by other methods.
-          # But I would think all samples should be marked as non-primary data, as the data is always coming from other sources
-          is_primary_data = FALSE,
+          # is_primary_data FALSE is about whether those same cells are already represented elsewhere
+          is_primary_data = ifelse(str_detect(study_data, "cellxgene.cziscience.com"), 
+                                   FALSE, TRUE),
           dataset_id = ifelse(
             str_detect(study_data, "cellxgene.cziscience.com"),
             str_extract(study_data, "(?<=/e/)[0-9a-f-]+(?=\\.cxg)"),
