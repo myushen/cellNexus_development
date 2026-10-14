@@ -24,7 +24,7 @@ tar_script({
   atlas_dir       <- "/vast/projects/cellxgene_curated/prostate_atlas/"
   atlas_id        <- "prostate_2026/0.3.3" # v0.3.3 to match rds version
   collection_id   <- "hutchison_prostate_2026"
-  seurat_rds_path <- "/vast/scratch/users/hutchison.w/prostate_atlas_transfer/prostate_atlas_sc_v3.3.rds"
+  seurat_rds_path <- "/vast/projects/cellxgene_curated/prostate_atlas/prostate_atlas_sc_v3.3_from_william.rds"
   counts_dir      <- file.path(atlas_dir, atlas_id,  "counts")
   cpm_dir         <- file.path(atlas_dir, atlas_id, "cpm")
   metadata_path   <- file.path(atlas_dir, "prostate_metadata.v0.3.3.parquet")
@@ -37,7 +37,7 @@ tar_script({
     "self_reported_ethnicity", "feature_count", "is_primary_data",
     "cell_annotation_blueprint_singler", "cell_annotation_monaco_singler",
     "cell_annotation_azimuth_l2", "cell_type_unified_ensemble", "is_immune",
-    "file_id_cellNexus_single_cell", "atlas_id"
+    "file_id_cellNexus_single_cell", "atlas_id", "title"
   )
   
   # ---- Slurm controllers -------------------------------------------------------
@@ -139,9 +139,10 @@ tar_script({
           )
         ) |>
         dplyr::rename(
-          self_reported_ethnicity = sample_ethnicity,
-          assay = sample_technology_sequencer,
-          disease = sample_disease
+          self_reported_ethnicity = ifelse(!is.na(sample_ethnicity), sample_ethnicity, "unknown"),
+          assay = sample_technology_platform,
+          disease = sample_disease,
+          title = study_name
         ) |>
         left_join(
           gene_counts_by_study,
