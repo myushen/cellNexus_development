@@ -331,8 +331,12 @@ job::job({
   )
 })
 
+# Local
 sce = get_metadata(local_metadata = "/vast/projects/cellxgene_curated/prostate_atlas/prostate_metadata.v0.3.3.parquet",
                    cloud_metadata = NULL) |>
-  get_single_cell_experiment(cache_directory = "/home/users/allstaff/shen.m/cellxgene_curated/prostate_atlas",
+  get_single_cell_experiment(cache_directory = "/vast/projects/cellxgene_curated/prostate_atlas",
                              assays = c("counts","cpm"))
 
+# Cloud when available
+sce = get_metadata(cloud_metadata = get_metadata_url("prostate_metadata.v0.3.3.parquet")) |>
+  get_single_cell_experiment( assay = c("counts", "cpm"))
