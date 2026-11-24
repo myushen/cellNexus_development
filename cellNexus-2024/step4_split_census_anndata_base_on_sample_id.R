@@ -37,7 +37,8 @@ save_data <- function(data, file_name) {
   } 
   
   
-  zellkonverter::writeH5AD(data, file = filename, compression = "gzip" )
+  #zellkonverter::writeH5AD(data, file = filename, compression = "gzip" )
+  anndataR::write_h5ad(data, path = filename, compression = "gzip" )
   return(filename)
 }
 
